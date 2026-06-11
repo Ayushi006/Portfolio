@@ -51,6 +51,7 @@
     line-height: 1.6;
     -webkit-font-smoothing: antialiased;
     overflow-x: hidden;
+    position: relative;
   }
 
   ::selection { background: var(--accent); color: #0a0a0a; }
@@ -125,6 +126,40 @@
     opacity: 0.05;
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
   }
+
+  /* ============ SCROLL-DRAWN SVG PATH ============ */
+  .scroll-path {
+    position: absolute;
+    top: 0;
+    left: 0;
+    z-index: -1;
+    pointer-events: none;
+    overflow: visible;
+  }
+  .sp-track {
+    fill: none;
+    stroke: rgba(244, 244, 245, 0.08);
+    stroke-width: 1.5;
+    stroke-dasharray: 3 9;
+    stroke-linecap: round;
+  }
+  .sp-draw {
+    fill: none;
+    stroke: url(#pathGrad);
+    stroke-width: 2.5;
+    stroke-linecap: round;
+    filter: drop-shadow(0 0 6px rgba(0, 255, 135, 0.45));
+  }
+  .sp-tip-halo {
+    fill: var(--accent);
+    opacity: 0.18;
+  }
+  .sp-tip-core {
+    fill: var(--accent);
+    filter: drop-shadow(0 0 8px var(--accent));
+  }
+  #pathTip { opacity: 0; transition: opacity 0.4s ease; }
+  #pathTip.on { opacity: 1; }
 
   /* ============ SCROLL PROGRESS BAR ============ */
   .scroll-progress {
@@ -1065,7 +1100,7 @@
     .timeline-node { transform: scale(1); }
     .timeline::before { transform: scaleY(1); }
     #dotgrid { display: none; }
-    .ambient, .scroll-progress { display: none; }
+    .ambient, .scroll-progress, .scroll-path { display: none; }
     .spot::after { display: none; }
     .type-cursor { display: none; }
   }
@@ -1081,6 +1116,23 @@
 </div>
 <div class="grain" aria-hidden="true"></div>
 <div class="scroll-progress" id="scrollProgress" aria-hidden="true"></div>
+
+<!-- Scroll-drawn journey path -->
+<svg class="scroll-path" id="scrollPathSvg" aria-hidden="true" width="0" height="0">
+  <defs>
+    <linearGradient id="pathGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#00ff87"/>
+      <stop offset="45%" stop-color="#2dd4bf"/>
+      <stop offset="100%" stop-color="#00ff87"/>
+    </linearGradient>
+  </defs>
+  <path class="sp-track" id="spTrack" d=""/>
+  <path class="sp-draw" id="spDraw" d=""/>
+  <g id="pathTip">
+    <circle class="sp-tip-halo" r="12" cx="0" cy="0"/>
+    <circle class="sp-tip-core" r="4" cx="0" cy="0"/>
+  </g>
+</svg>
 
 <!-- ============ NAVBAR ============ -->
 <nav class="nav" id="nav" aria-label="Primary">
@@ -1686,6 +1738,81 @@
   }, { threshold: 0.5 });
   counterEls.forEach(function (el) { counterObs.observe(el); });
 
+  /* ============ SCROLL-DRAWN SVG PATH ============ */
+  var spSvg = document.getElementById('scrollPathSvg');
+  var spTrack = document.getElementById('spTrack');
+  var spDraw = document.getElementById('spDraw');
+  var spTip = document.getElementById('pathTip');
+  var spLen = 0, spStartY = 0, spEndY = 1;
+
+  function buildScrollPath() {
+    if (reduceMotion) return;
+    var docH = document.documentElement.scrollHeight;
+    var w = document.documentElement.clientWidth;
+    spSvg.setAttribute('width', w);
+    spSvg.setAttribute('height', docH);
+    spSvg.setAttribute('viewBox', '0 0 ' + w + ' ' + docH);
+
+    spStartY = window.innerHeight * 0.92;
+    spEndY = docH - 140;
+    // Narrower weave on small screens so the line stays out of the text column
+    var inset = w < 768 ? 0.07 : 0.08;
+    var leftX = w * inset;
+    var rightX = w * (1 - inset);
+    var seg = w < 768 ? 620 : 780;
+    var n = Math.max(4, Math.round((spEndY - spStartY) / seg));
+
+    var d = 'M ' + (w / 2).toFixed(1) + ' ' + spStartY.toFixed(1);
+    var prevX = w / 2, prevY = spStartY;
+    for (var i = 1; i <= n; i++) {
+      var y = spStartY + (spEndY - spStartY) * (i / n);
+      var x = (i === n) ? w / 2 : (i % 2 === 1 ? rightX : leftX);
+      var cy = prevY + (y - prevY) * 0.55;
+      d += ' C ' + prevX.toFixed(1) + ' ' + cy.toFixed(1) +
+           ', ' + x.toFixed(1) + ' ' + cy.toFixed(1) +
+           ', ' + x.toFixed(1) + ' ' + y.toFixed(1);
+      prevX = x; prevY = y;
+    }
+    spTrack.setAttribute('d', d);
+    spDraw.setAttribute('d', d);
+    spLen = spDraw.getTotalLength();
+    spDraw.style.strokeDasharray = spLen;
+    spDraw.style.strokeDashoffset = spLen;
+  }
+
+  function updateScrollPath(y) {
+    if (reduceMotion || !spLen) return;
+    // Tip leads slightly ahead of the viewport centre
+    var focus = y + window.innerHeight * 0.62;
+    var p = (focus - spStartY) / (spEndY - spStartY);
+    p = Math.max(0, Math.min(p, 1));
+    spDraw.style.strokeDashoffset = spLen * (1 - p);
+    if (p > 0 && p < 1) {
+      var pt = spDraw.getPointAtLength(spLen * p);
+      spTip.setAttribute('transform', 'translate(' + pt.x.toFixed(1) + ' ' + pt.y.toFixed(1) + ')');
+      spTip.classList.add('on');
+    } else {
+      spTip.classList.remove('on');
+    }
+  }
+
+  if (!reduceMotion) {
+    buildScrollPath();
+    // Rebuild once fonts/layout settle, and on resize
+    window.addEventListener('load', function () {
+      buildScrollPath();
+      updateScrollPath(window.scrollY);
+    });
+    var spResizeTimer;
+    window.addEventListener('resize', function () {
+      clearTimeout(spResizeTimer);
+      spResizeTimer = setTimeout(function () {
+        buildScrollPath();
+        updateScrollPath(window.scrollY);
+      }, 180);
+    });
+  }
+
   /* ============ NAVBAR / PROGRESS / PARALLAX ============ */
   var nav = document.getElementById('nav');
   var progressBar = document.getElementById('scrollProgress');
@@ -1712,6 +1839,9 @@
       heroContent.style.transform = 'translateY(' + (y * 0.22) + 'px)';
       heroContent.style.opacity = Math.max(1 - y / (window.innerHeight * 0.85), 0);
     }
+
+    // Scroll-drawn journey path
+    updateScrollPath(y);
     ticking = false;
   }
   window.addEventListener('scroll', function () {
